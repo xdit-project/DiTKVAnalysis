@@ -1,35 +1,151 @@
-import inspect
-import math
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Optional
+from abc import ABCMeta, abstractmethod
 
 import torch
 import torch.nn.functional as F
-import os
-from torch import nn
 
 import numpy as np
-import matplotlib.pyplot as plt
 from collections import defaultdict
 
-from diffusers.image_processor import IPAdapterMaskProcessor
-from diffusers.utils import deprecate, logging
-from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_available
-from diffusers.utils.torch_utils import is_torch_version, maybe_allow_in_graph
-
+from diffusers.utils import deprecate
 from diffusers.models.attention_processor import Attention
 
-class AttnProcessor2_0:
-    r"""
-    Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
-    """
-
+class AttnProcessorExperimentBase(metaclass=ABCMeta):
     def __init__(self):
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
         self.timestep = 0
-        self.output_dir = "kv_cache_output"
-        os.makedirs(self.output_dir, exist_ok=True)
         self.kv_cache = defaultdict(lambda: defaultdict(list))
+        self.activation_cache = defaultdict(lambda: defaultdict(list))
+
+    @abstractmethod
+    def __call__():
+        pass
+
+    def save_kv_cache(self, key, value, attn):
+        layer_name = attn.__class__.__name__
+        self.kv_cache[layer_name]['key'].append(key.detach().cpu().numpy())
+        self.kv_cache[layer_name]['value'].append(value.detach().cpu().numpy())
+
+    def save_activation_cache(self, activation, attn):
+        layer_name = attn.__class__.__name__
+        self.activation_cache[layer_name]['activation'].append(activation.detach().cpu().numpy())
+
+    def plot_kv_diff(self, layer_num: int, ax1, num_columns: int):
+        print(f"Ploting KV cache for {len(self.kv_cache)} layers.")
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        for layer_name, kv_data in self.kv_cache.items():
+            if len(kv_data['key']) < 2:
+                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
+                continue
+
+            key_diff_means, key_diff_vars = [], []
+            value_diff_means, value_diff_vars = [], []
+            key_means, key_vars = [], []
+            value_means, value_vars = [], []
+            
+            for i in range(len(kv_data['key'])):
+                key = kv_data['key'][i]
+                value = kv_data['value'][i]
+                
+                # 计算均值和方差
+                key_gpu = torch.tensor(key, device=device)
+                value_gpu = torch.tensor(value, device=device)
+                
+                key_means.append(torch.mean(torch.abs(key_gpu)).item())
+                key_vars.append(torch.var(key_gpu).item())
+                value_means.append(torch.mean(torch.abs(value_gpu)).item())
+                value_vars.append(torch.var(value_gpu).item())
+                
+                if i > 0:
+                    prev_key = kv_data['key'][i-1]
+                    prev_value = kv_data['value'][i-1]
+                    
+                    # 计算差异
+                    key_diff_gpu = key_gpu - torch.tensor(prev_key, device=device)
+                    value_diff_gpu = value_gpu - torch.tensor(prev_value, device=device)
+                    
+                else:
+                    key_diff_gpu = key_gpu
+                    value_diff_gpu = value_gpu
+                    
+                key_diff_means.append(torch.mean(torch.abs(key_diff_gpu)).item())
+                key_diff_vars.append(torch.var(key_diff_gpu).item())
+                value_diff_means.append(torch.mean(torch.abs(value_diff_gpu)).item())
+                value_diff_vars.append(torch.var(value_diff_gpu).item())
+                    
+
+            timesteps = range(len(key_means))
+            
+            # Plot differences with error bars
+            row, column = layer_num//num_columns, layer_num%num_columns
+            ax1[row, column].errorbar(timesteps, key_diff_means, yerr=np.sqrt(key_diff_vars), 
+                            label='Key Diff', color='blue', capsize=5)
+            ax1[row, column].errorbar(timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
+                            label='Value Diff', color='red', capsize=5)
+            ax1[row, column].set_xlabel('Timestep')
+            ax1[row, column].set_ylabel('Mean of Absolute Differences')
+            ax1[row, column].legend()
+            ax1[row, column].set_title(f'{layer_name} {layer_num} kv Diff')
+
+        self.kv_cache.clear()
+        print("Finished plotting.")
+
+    def plot_activation_diff(self, layer_num: int, ax1, num_columns: int):
+        print(f"Plotting activation cache for {len(self.activation_cache)} layers.")
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        for layer_name, activaton_data in self.activation_cache.items():
+            if len(activaton_data['activation']) < 2:
+                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
+                continue
+
+            activation_diff_means, activation_diff_vars = [], []
+            activation_means, activation_vars = [], []
+            
+            for i in range(len(activaton_data['activation'])):
+                activation = activaton_data['activation'][i]
+                
+                # 计算均值和方差
+                activation_gpu = torch.tensor(activation, device=device)
+                
+                activation_means.append(torch.mean(torch.abs(activation_gpu)).item())
+                activation_vars.append(torch.var(activation_gpu).item())
+                
+                if i > 0:
+                    prev_activation = activaton_data['activation'][i-1]
+                    
+                    # 计算差异
+                    activation_diff_gpu = activation_gpu - torch.tensor(prev_activation, device=device)
+                    
+                else:
+                    activation_diff_gpu = activation_gpu
+                    
+                activation_diff_means.append(torch.mean(torch.abs(activation_diff_gpu)).item())
+                activation_diff_vars.append(torch.var(activation_diff_gpu).item())
+                    
+
+            timesteps = range(len(activation_means))
+            
+            # Plot differences with error bars
+            row, column = layer_num//num_columns, layer_num%num_columns
+            ax1[row, column].errorbar(timesteps, activation_diff_means, yerr=np.sqrt(activation_diff_vars), 
+                            label='Activation Diff', color='blue', capsize=5)
+            ax1[row, column].set_xlabel('Timestep')
+            ax1[row, column].set_ylabel('Mean of Absolute Differences')
+            ax1[row, column].legend()
+            ax1[row, column].set_title(f'{layer_name} {layer_num} Activation Diff')
+            
+        self.activation_cache.clear()
+        print("Finished plotting.")
+
+
+class AttnProcessor2_0(AttnProcessorExperimentBase):
+    def __init__(self):
+        super().__init__()
 
     def __call__(
         self,
@@ -79,7 +195,7 @@ class AttnProcessor2_0:
         value = attn.to_v(encoder_hidden_states)
 
         # save kv cache in a dict for plot
-        self.print_kv_cache(key, value, attn)
+        self.save_kv_cache(key, value, attn)
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -116,104 +232,15 @@ class AttnProcessor2_0:
 
         hidden_states = hidden_states / attn.rescale_output_factor
 
+        self.save_activation_cache(hidden_states, attn)
+
         self.timestep += 1
         return hidden_states
 
-    def print_kv_cache(self, key, value, attn):
-        layer_name = attn.__class__.__name__
-        self.kv_cache[layer_name]['key'].append(key.detach().cpu().numpy())
-        self.kv_cache[layer_name]['value'].append(value.detach().cpu().numpy())
-        
 
-    def plot_kv_diff(self, layer_num: int):
-        print(f"Plotting KV diff and stats for layer {layer_num}")
-        print(f"KV cache contains {len(self.kv_cache)} layers")
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        for layer_name, kv_data in self.kv_cache.items():
-            print(f"Processing layer: {layer_name}")
-            print(f"Number of timesteps for key: {len(kv_data['key'])}")
-            print(f"Number of timesteps for value: {len(kv_data['value'])}")
-
-            if len(kv_data['key']) < 2:
-                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
-                continue
-
-            key_diff_means, key_diff_vars = [], []
-            value_diff_means, value_diff_vars = [], []
-            key_means, key_vars = [], []
-            value_means, value_vars = [], []
-            
-            for i in range(len(kv_data['key'])):
-                key = kv_data['key'][i]
-                value = kv_data['value'][i]
-                
-                # 计算均值和方差
-                key_gpu = torch.tensor(key, device=device)
-                value_gpu = torch.tensor(value, device=device)
-                
-                key_means.append(torch.mean(torch.abs(key_gpu)).item())
-                key_vars.append(torch.var(key_gpu).item())
-                value_means.append(torch.mean(torch.abs(value_gpu)).item())
-                value_vars.append(torch.var(value_gpu).item())
-                
-                if i > 0:
-                    prev_key = kv_data['key'][i-1]
-                    prev_value = kv_data['value'][i-1]
-                    
-                    # 计算差异
-                    key_diff_gpu = key_gpu - torch.tensor(prev_key, device=device)
-                    value_diff_gpu = value_gpu - torch.tensor(prev_value, device=device)
-                    
-                    key_diff_means.append(torch.mean(torch.abs(key_diff_gpu)).item())
-                    key_diff_vars.append(torch.var(key_diff_gpu).item())
-                    value_diff_means.append(torch.mean(torch.abs(value_diff_gpu)).item())
-                    value_diff_vars.append(torch.var(value_diff_gpu).item())
-
-            timesteps = range(len(key_means))
-            diff_timesteps = range(1, len(key_diff_means) + 1)
-            
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
-            
-            # Plot differences with error bars
-            ax1.errorbar(diff_timesteps, key_diff_means, yerr=np.sqrt(key_diff_vars), 
-                         label='Key Diff', color='blue', capsize=5)
-            ax1.errorbar(diff_timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
-                         label='Value Diff', color='red', capsize=5)
-            ax1.set_xlabel('Timestep')
-            ax1.set_ylabel('Mean of Absolute Differences')
-            ax1.legend()
-            ax1.set_title(f'KV Cache Differences for {layer_name}')
-            
-            # Plot actual key and value statistics with error bars
-            ax2.errorbar(timesteps, key_means, yerr=np.sqrt(key_vars), 
-                         label='Key', color='blue', capsize=5)
-            ax2.errorbar(timesteps, value_means, yerr=np.sqrt(value_vars), 
-                         label='Value', color='red', capsize=5)
-            ax2.set_xlabel('Timestep')
-            ax2.set_ylabel('Mean of Absolute Values')
-            ax2.legend()
-            ax2.set_title(f'KV Cache Statistics for {layer_name}')
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, f'{layer_name}_{layer_num}_kv_stats.png'))
-            plt.close()
-
-        print("Finished plotting KV diff and stats")
-
-class xFuserCogVideoXAttnProcessor2_0:
-    r"""
-    Processor for implementing scaled dot-product attention for the CogVideoX model. It applies a rotary embedding on
-    query and key vectors, but does not include spatial normalization.
-    """
-
+class xFuserCogVideoXAttnProcessor2_0(AttnProcessorExperimentBase):
     def __init__(self):
         super().__init__()
-        self.timestep = 0
-        self.output_dir = "kv_cache_output"
-        os.makedirs(self.output_dir, exist_ok=True)
-        self.kv_cache = defaultdict(lambda: defaultdict(list))
 
     def __call__(
         self,
@@ -260,23 +287,8 @@ class xFuserCogVideoXAttnProcessor2_0:
         if attn.norm_k is not None:
             key = attn.norm_k(key)
 
-        # Apply RoPE if needed
-        '''if image_rotary_emb is not None:
-            query[:, :, text_seq_length:] = apply_rotary_emb(
-                query[:, :, text_seq_length:], image_rotary_emb
-            )
-            if not attn.is_cross_attention:
-                key[:, :, text_seq_length:] = apply_rotary_emb(
-                    key[:, :, text_seq_length:], image_rotary_emb
-                )'''
+        self.save_kv_cache(key, value, attn)
 
-        #! ---------------------------------------- KV CACHE ----------------------------------------
-        self.print_kv_cache(key, value, attn)
-
-        #! ---------------------------------------- KV CACHE ----------------------------------------
-
-        #! ---------------------------------------- ATTENTION ----------------------------------------
-        # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, dropout_p=0.0, is_causal=False
@@ -285,101 +297,176 @@ class xFuserCogVideoXAttnProcessor2_0:
             batch_size, -1, attn.heads * head_dim
         )
 
-        #! ORIGIN
-        # hidden_states = F.scaled_dot_product_attention(
-        #     query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        # )
-        # hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
-        #! ---------------------------------------- ATTENTION ----------------------------------------
-
         assert text_seq_length + latent_seq_length == hidden_states.shape[1]
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
+        self.save_activation_cache(hidden_states, attn)
 
         encoder_hidden_states, hidden_states = hidden_states.split(
             [text_seq_length, latent_seq_length], dim=1
         )
         return hidden_states, encoder_hidden_states
 
-    def print_kv_cache(self, key, value, attn):
-        layer_name = attn.__class__.__name__
-        self.kv_cache[layer_name]['key'].append(key.detach().cpu().numpy())
-        self.kv_cache[layer_name]['value'].append(value.detach().cpu().numpy())
+
+class xFuserJointAttnProcessor2_0(AttnProcessorExperimentBase):
+    def __init__(self):
+        super().__init__()
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: torch.FloatTensor = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        *args,
+        **kwargs,
+    ) -> torch.FloatTensor:
+        residual = hidden_states
+
+        input_ndim = hidden_states.ndim
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+        context_input_ndim = encoder_hidden_states.ndim
+        if context_input_ndim == 4:
+            batch_size, channel, height, width = encoder_hidden_states.shape
+            encoder_hidden_states = encoder_hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        batch_size = encoder_hidden_states.shape[0]
+
+        # `sample` projections.
+        query = attn.to_q(hidden_states)
+        key = attn.to_k(hidden_states)
+        value = attn.to_v(hidden_states)
+
+        # `context` projections.
+        encoder_hidden_states_query_proj = attn.add_q_proj(encoder_hidden_states)
+        encoder_hidden_states_key_proj = attn.add_k_proj(encoder_hidden_states)
+        encoder_hidden_states_value_proj = attn.add_v_proj(encoder_hidden_states)
+
+        # attention
+        query = torch.cat([query, encoder_hidden_states_query_proj], dim=1)
+        key = torch.cat([key, encoder_hidden_states_key_proj], dim=1)
+        value = torch.cat([value, encoder_hidden_states_value_proj], dim=1)
         
-    def plot_kv_diff(self, layer_num: int, ax1):
-        print(f"Plotting KV diff and stats for layer {layer_num}")
-        print(f"KV cache contains {len(self.kv_cache)} layers")
+        self.save_kv_cache(key, value, attn)
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        hidden_states = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0, is_causal=False)
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        hidden_states = hidden_states.to(query.dtype)
         
-        for layer_name, kv_data in self.kv_cache.items():
-            print(f"Processing layer: {layer_name}")
-            print(f"Number of timesteps for key: {len(kv_data['key'])}")
-            print(f"Number of timesteps for value: {len(kv_data['value'])}")
+        # Split the attention outputs.
+        hidden_states, encoder_hidden_states = (
+            hidden_states[:, : residual.shape[1]],
+            hidden_states[:, residual.shape[1] :],
+        )
 
-            if len(kv_data['key']) < 2:
-                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
-                continue
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+        if not attn.context_pre_only:
+            encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
-            key_diff_means, key_diff_vars = [], []
-            value_diff_means, value_diff_vars = [], []
-            key_means, key_vars = [], []
-            value_means, value_vars = [], []
-            
-            for i in range(len(kv_data['key'])):
-                key = kv_data['key'][i]
-                value = kv_data['value'][i]
-                
-                # 计算均值和方差
-                key_gpu = torch.tensor(key, device=device)
-                value_gpu = torch.tensor(value, device=device)
-                
-                key_means.append(torch.mean(torch.abs(key_gpu)).item())
-                key_vars.append(torch.var(key_gpu).item())
-                value_means.append(torch.mean(torch.abs(value_gpu)).item())
-                value_vars.append(torch.var(value_gpu).item())
-                
-                if i > 0:
-                    prev_key = kv_data['key'][i-1]
-                    prev_value = kv_data['value'][i-1]
-                    
-                    # 计算差异
-                    key_diff_gpu = key_gpu - torch.tensor(prev_key, device=device)
-                    value_diff_gpu = value_gpu - torch.tensor(prev_value, device=device)
-                    
-                else:
-                    key_diff_gpu = key_gpu
-                    value_diff_gpu = value_gpu
-                key_diff_means.append(torch.mean(torch.abs(key_diff_gpu)).item())
-                key_diff_vars.append(torch.var(key_diff_gpu).item())
-                value_diff_means.append(torch.mean(torch.abs(value_diff_gpu)).item())
-                value_diff_vars.append(torch.var(value_diff_gpu).item())
-                    
+        self.save_activation_cache(torch.concat((hidden_states, encoder_hidden_states), axis=1), attn)
 
-            timesteps = range(len(key_means))
-            diff_timesteps = range(1, len(key_diff_means) + 1)
-            
-            # Plot differences with error bars
-            ax1[layer_num//6, layer_num%6].errorbar(diff_timesteps, key_diff_means, yerr=np.sqrt(key_diff_vars), 
-                         label='Key Diff', color='blue', capsize=5)
-            ax1[layer_num//6, layer_num%6].errorbar(diff_timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
-                         label='Value Diff', color='red', capsize=5)
-            ax1[layer_num//6, layer_num%6].set_xlabel('Timestep')
-            ax1[layer_num//6, layer_num%6].set_ylabel('Mean of Absolute Differences')
-            ax1[layer_num//6, layer_num%6].legend()
-            ax1[layer_num//6, layer_num%6].set_title(f'diff {layer_name} {i}')
-            
-            # Plot actual key and value statistics with error bars
-            '''ax2.errorbar(timesteps, key_means, yerr=np.sqrt(key_vars), 
-                         label='Key', color='blue', capsize=5)
-            ax2.errorbar(timesteps, value_means, yerr=np.sqrt(value_vars), 
-                         label='Value', color='red', capsize=5)
-            ax2.set_xlabel('Timestep')
-            ax2.set_ylabel('Mean of Absolute Values')
-            ax2.legend()
-            ax2.set_title(f'KV Cache Statistics for {layer_name}')'''
-            
-        print("Finished plotting KV diff and stats")
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+        if context_input_ndim == 4:
+            encoder_hidden_states = encoder_hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+
+        return hidden_states, encoder_hidden_states
+
+
+class FluxAttnProcessor2_0(AttnProcessorExperimentBase):
+    def __init__(self):
+        super().__init__()
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: torch.FloatTensor = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        image_rotary_emb: Optional[torch.Tensor] = None,
+    ) -> torch.FloatTensor:
+        batch_size, _, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+
+        # `sample` projections.
+        query = attn.to_q(hidden_states)
+        key = attn.to_k(hidden_states)
+        value = attn.to_v(hidden_states)
+
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        if attn.norm_q is not None:
+            query = attn.norm_q(query)
+        if attn.norm_k is not None:
+            key = attn.norm_k(key)
+
+        # the attention in FluxSingleTransformerBlock does not use `encoder_hidden_states`
+        if encoder_hidden_states is not None:
+            # `context` projections.
+            encoder_hidden_states_query_proj = attn.add_q_proj(encoder_hidden_states)
+            encoder_hidden_states_key_proj = attn.add_k_proj(encoder_hidden_states)
+            encoder_hidden_states_value_proj = attn.add_v_proj(encoder_hidden_states)
+
+            encoder_hidden_states_query_proj = encoder_hidden_states_query_proj.view(
+                batch_size, -1, attn.heads, head_dim
+            ).transpose(1, 2)
+            encoder_hidden_states_key_proj = encoder_hidden_states_key_proj.view(
+                batch_size, -1, attn.heads, head_dim
+            ).transpose(1, 2)
+            encoder_hidden_states_value_proj = encoder_hidden_states_value_proj.view(
+                batch_size, -1, attn.heads, head_dim
+            ).transpose(1, 2)
+
+            if attn.norm_added_q is not None:
+                encoder_hidden_states_query_proj = attn.norm_added_q(encoder_hidden_states_query_proj)
+            if attn.norm_added_k is not None:
+                encoder_hidden_states_key_proj = attn.norm_added_k(encoder_hidden_states_key_proj)
+
+            # attention
+            query = torch.cat([encoder_hidden_states_query_proj, query], dim=2)
+            key = torch.cat([encoder_hidden_states_key_proj, key], dim=2)
+            value = torch.cat([encoder_hidden_states_value_proj, value], dim=2)
+
+        self.save_kv_cache(key, value, attn)
+
+        hidden_states = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0, is_causal=False)
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        hidden_states = hidden_states.to(query.dtype)
+
+        if encoder_hidden_states is not None:
+            encoder_hidden_states, hidden_states = (
+                hidden_states[:, : encoder_hidden_states.shape[1]],
+                hidden_states[:, encoder_hidden_states.shape[1] :],
+            )
+
+            # linear proj
+            hidden_states = attn.to_out[0](hidden_states)
+            # dropout
+            hidden_states = attn.to_out[1](hidden_states)
+            encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
+
+            self.save_activation_cache(torch.concat((hidden_states, encoder_hidden_states), axis=1), attn)
+
+            return hidden_states, encoder_hidden_states
+        else:
+            self.save_activation_cache(hidden_states, attn)
+
+            return hidden_states
