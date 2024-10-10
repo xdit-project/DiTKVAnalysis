@@ -31,9 +31,7 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
         layer_name = attn.__class__.__name__
         self.activation_cache[layer_name]['activation'].append(activation.detach().cpu().numpy())
 
-    def plot_kv_diff(self, layer_num: int, ax1, num_columns: int):
-        print(f"Ploting KV cache for {len(self.kv_cache)} layers.")
-
+    def plot_kv_diff(self, layer_num: int, ax1, num_columns: int, relative: bool = False):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         for layer_name, kv_data in self.kv_cache.items():
@@ -43,41 +41,44 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
 
             key_diff_means, key_diff_vars = [], []
             value_diff_means, value_diff_vars = [], []
-            key_means, key_vars = [], []
-            value_means, value_vars = [], []
+            pre_key_gpu, cur_key_gpu = None, None
+            pre_value_gpu, cur_value_gpu = None, None
             
             for i in range(len(kv_data['key'])):
-                key = kv_data['key'][i]
-                value = kv_data['value'][i]
-                
-                # 计算均值和方差
-                key_gpu = torch.tensor(key, device=device)
-                value_gpu = torch.tensor(value, device=device)
-                
-                key_means.append(torch.mean(torch.abs(key_gpu)).item())
-                key_vars.append(torch.var(key_gpu).item())
-                value_means.append(torch.mean(torch.abs(value_gpu)).item())
-                value_vars.append(torch.var(value_gpu).item())
-                
-                if i > 0:
-                    prev_key = kv_data['key'][i-1]
-                    prev_value = kv_data['value'][i-1]
-                    
-                    # 计算差异
-                    key_diff_gpu = key_gpu - torch.tensor(prev_key, device=device)
-                    value_diff_gpu = value_gpu - torch.tensor(prev_value, device=device)
+                cur_key = kv_data['key'][i]
+                cur_value = kv_data['value'][i]
+                cur_key_gpu = torch.abs(torch.tensor(cur_key, device=device))
+                cur_value_gpu = torch.abs(torch.tensor(cur_value, device=device))
+                cur_key_gpu[cur_key_gpu == 0] = 1e-4
+                cur_value_gpu[cur_value_gpu == 0] = 1e-4
+
+                if i == 0:
+                    if relative:
+                        key_diff_gpu = torch.ones_like(cur_key_gpu, device=device)
+                        value_diff_gpu = torch.ones_like(cur_value_gpu, device=device)
+                    else:
+                        key_diff_gpu = cur_key_gpu
+                        value_diff_gpu = cur_value_gpu
                     
                 else:
-                    key_diff_gpu = key_gpu
-                    value_diff_gpu = value_gpu
-                    
+                    if relative:
+                        key_diff_gpu = torch.abs(cur_key_gpu - pre_key_gpu) / (cur_key_gpu + pre_key_gpu)
+                        value_diff_gpu = torch.abs(cur_value_gpu - pre_value_gpu) / (cur_value_gpu + pre_value_gpu)
+                        
+                    else:
+                        key_diff_gpu = cur_key_gpu - pre_key_gpu
+                        value_diff_gpu = cur_value_gpu - pre_value_gpu
+
+                pre_key_gpu, cur_key_gpu = cur_key_gpu, None
+                pre_value_gpu, cur_value_gpu = cur_value_gpu, None
+
                 key_diff_means.append(torch.mean(torch.abs(key_diff_gpu)).item())
                 key_diff_vars.append(torch.var(key_diff_gpu).item())
                 value_diff_means.append(torch.mean(torch.abs(value_diff_gpu)).item())
                 value_diff_vars.append(torch.var(value_diff_gpu).item())
                     
 
-            timesteps = range(len(key_means))
+            timesteps = range(len(kv_data['key']))
             
             # Plot differences with error bars
             row, column = layer_num//num_columns, layer_num%num_columns
@@ -86,16 +87,16 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
             ax1[row, column].errorbar(timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
                             label='Value Diff', color='red', capsize=5)
             ax1[row, column].set_xlabel('Timestep')
-            ax1[row, column].set_ylabel('Mean of Absolute Differences')
+            if relative:
+                ax1[row, column].set_ylabel('Mean of Relative Differences')
+            else:
+                ax1[row, column].set_ylabel('Mean of Absolute Differences')
             ax1[row, column].legend()
-            ax1[row, column].set_title(f'{layer_name} {layer_num} kv Diff')
+            ax1[row, column].set_title(f'{layer_name} {layer_num} KV Diff')
 
         self.kv_cache.clear()
-        print("Finished plotting.")
 
-    def plot_activation_diff(self, layer_num: int, ax1, num_columns: int):
-        print(f"Plotting activation cache for {len(self.activation_cache)} layers.")
-
+    def plot_activation_diff(self, layer_num: int, ax1, num_columns: int, relative: bool = False):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         for layer_name, activaton_data in self.activation_cache.items():
@@ -104,43 +105,47 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
                 continue
 
             activation_diff_means, activation_diff_vars = [], []
-            activation_means, activation_vars = [], []
+            pre_activation_gpu, cur_activation_gpu = None, None
             
             for i in range(len(activaton_data['activation'])):
-                activation = activaton_data['activation'][i]
+                cur_activation = activaton_data['activation'][i]
+                cur_activation_gpu = torch.abs(torch.tensor(cur_activation, device=device))
+                cur_activation_gpu[cur_activation_gpu == 0] = 1e-4
                 
-                # 计算均值和方差
-                activation_gpu = torch.tensor(activation, device=device)
-                
-                activation_means.append(torch.mean(torch.abs(activation_gpu)).item())
-                activation_vars.append(torch.var(activation_gpu).item())
-                
-                if i > 0:
-                    prev_activation = activaton_data['activation'][i-1]
-                    
-                    # 计算差异
-                    activation_diff_gpu = activation_gpu - torch.tensor(prev_activation, device=device)
+                if i == 0:
+                    if relative:
+                        activation_diff_gpu = torch.ones_like(cur_activation_gpu, device=device)
+                    else:
+                        activation_diff_gpu = cur_activation_gpu
                     
                 else:
-                    activation_diff_gpu = activation_gpu
-                    
+                    if relative:
+                        activation_diff_gpu = torch.abs(cur_activation_gpu - pre_activation_gpu) / (cur_activation_gpu + pre_activation_gpu)
+                        
+                    else:
+                        activation_diff_gpu = cur_activation_gpu - pre_activation_gpu
+
+                pre_activation_gpu, cur_activation_gpu = cur_activation_gpu, None
+
                 activation_diff_means.append(torch.mean(torch.abs(activation_diff_gpu)).item())
                 activation_diff_vars.append(torch.var(activation_diff_gpu).item())
                     
 
-            timesteps = range(len(activation_means))
+            timesteps = range(len(activaton_data['activation']))
             
             # Plot differences with error bars
             row, column = layer_num//num_columns, layer_num%num_columns
             ax1[row, column].errorbar(timesteps, activation_diff_means, yerr=np.sqrt(activation_diff_vars), 
                             label='Activation Diff', color='blue', capsize=5)
             ax1[row, column].set_xlabel('Timestep')
-            ax1[row, column].set_ylabel('Mean of Absolute Differences')
+            if relative:
+                ax1[row, column].set_ylabel('Mean of Relative Differences')
+            else:
+                ax1[row, column].set_ylabel('Mean of Absolute Differences')
             ax1[row, column].legend()
             ax1[row, column].set_title(f'{layer_name} {layer_num} Activation Diff')
             
         self.activation_cache.clear()
-        print("Finished plotting.")
 
 
 class AttnProcessor2_0(AttnProcessorExperimentBase):

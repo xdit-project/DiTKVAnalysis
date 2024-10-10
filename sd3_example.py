@@ -4,13 +4,12 @@ attention_processor.JointAttnProcessor2_0 = CustomAttnProcessor2_0
 
 import matplotlib.pyplot as plt
 from diffusers import StableDiffusion3Pipeline
-import time
 import os
 import torch
 import torch.distributed
 
 def main():
-    # CogVideoX model has 24 == 4x6 transformer blocks
+    # SD3 model has 24 == 4x6 transformer blocks
     row, column = 4, 6
 
     pipe = StableDiffusion3Pipeline.from_pretrained(

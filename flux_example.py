@@ -4,7 +4,6 @@ attention_processor.FluxAttnProcessor2_0 = CustomAttnProcessor2_0
 
 import matplotlib.pyplot as plt
 from diffusers import FluxPipeline
-import time
 import os
 import torch
 import torch.distributed

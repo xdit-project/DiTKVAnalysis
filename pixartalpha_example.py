@@ -2,18 +2,17 @@ from diffusers.models import attention_processor
 from attn_processor import AttnProcessor2_0 as CustomAttnProcessor2_0
 attention_processor.AttnProcessor2_0 = CustomAttnProcessor2_0
 
-from diffusers import schedulers
-schedulers.DPMSolverMultistepScheduler = schedulers.CogVideoXDDIMScheduler
+# from diffusers import schedulers
+# schedulers.DPMSolverMultistepScheduler = schedulers.CogVideoXDDIMScheduler
 
 import matplotlib.pyplot as plt
 from diffusers import PixArtAlphaPipeline
-import time
 import os
 import torch
 import torch.distributed
 
 def main():
-    # CogVideoX model has 28 == 4x7 transformer blocks
+    # PixArt model has 28 == 4x7 transformer blocks
     row, column = 4, 7
 
     pipe = PixArtAlphaPipeline.from_pretrained(

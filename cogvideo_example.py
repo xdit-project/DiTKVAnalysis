@@ -3,9 +3,11 @@ from diffusers.utils import export_to_video
 from attn_processor import xFuserCogVideoXAttnProcessor2_0 as CustomAttnProcessor2_0
 attention_processor.CogVideoXAttnProcessor2_0 = CustomAttnProcessor2_0
 
+# from diffusers import schedulers
+# schedulers.CogVideoXDDIMScheduler = schedulers.DPMSolverMultistepScheduler
+
 import matplotlib.pyplot as plt
 from diffusers import CogVideoXPipeline
-import time
 import os
 import torch
 import torch.distributed
