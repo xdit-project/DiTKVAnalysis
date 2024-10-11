@@ -3,6 +3,9 @@ from diffusers.utils import export_to_video
 from attn_processor import xFuserCogVideoXAttnProcessor2_0 as CustomAttnProcessor2_0
 attention_processor.CogVideoXAttnProcessor2_0 = CustomAttnProcessor2_0
 
+from diffusers import schedulers
+schedulers.CogVideoXDDIMScheduler = schedulers.DPMSolverMultistepScheduler
+
 import matplotlib.pyplot as plt
 from diffusers import CogVideoXPipeline
 import os
@@ -13,8 +16,8 @@ def main():
     # CogVideoX model has 30 == 5x6 transformer blocks
     row, column = 5, 6
     relative = False
-    os.makedirs('figs/overall', exist_ok=True)
-    os.makedirs('results/overall', exist_ok=True)
+    os.makedirs('figs/switch_scheduler', exist_ok=True)
+    os.makedirs('results/switch_scheduler', exist_ok=True)
 
     pipe = CogVideoXPipeline.from_pretrained(
         pretrained_model_name_or_path="/cfs/dit/CogVideoX-2b",
@@ -46,9 +49,9 @@ def main():
         fig2.tight_layout()
 
         relative_name = 'relative' if relative else 'absolute'
-        fig1.savefig(os.path.join('figs/overall', f'cogvideo_kv_diffs_{num_inference_steps}_steps_{relative_name}.png'))
-        fig2.savefig(os.path.join('figs/overall', f'cogvideo_activation_stats_{num_inference_steps}_steps_{relative_name}.png'))
-        export_to_video(output, os.path.join('results/overall', f'cogvideo_output_{num_inference_steps}_steps_{relative_name}.mp4'), fps=8)
+        fig1.savefig(os.path.join('figs/switch_scheduler', f'cogvideo_kv_diffs_{num_inference_steps}_steps_{relative_name}.png'))
+        fig2.savefig(os.path.join('figs/switch_scheduler', f'cogvideo_activation_stats_{num_inference_steps}_steps_{relative_name}.png'))
+        export_to_video(output, os.path.join('results/switch_scheduler', f'cogvideo_output_{num_inference_steps}_steps_{relative_name}.mp4'), fps=8)
 
 
 if __name__ == "__main__":

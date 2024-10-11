@@ -86,6 +86,7 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
                             label='Key Diff', color='blue', capsize=5)
             ax1[row, column].errorbar(timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
                             label='Value Diff', color='red', capsize=5)
+            ax1[row, column].set_xticks(range(0, len(kv_data['key']), len(kv_data['key']) // 10))
             ax1[row, column].set_xlabel('Timestep')
             if relative:
                 ax1[row, column].set_ylabel('Mean of Relative Differences')
@@ -137,6 +138,109 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
             row, column = layer_num//num_columns, layer_num%num_columns
             ax1[row, column].errorbar(timesteps, activation_diff_means, yerr=np.sqrt(activation_diff_vars), 
                             label='Activation Diff', color='blue', capsize=5)
+            ax1[row, column].set_xticks(range(0, len(activaton_data['activation']), len(activaton_data['activation']) // 10))
+            ax1[row, column].set_xlabel('Timestep')
+            if relative:
+                ax1[row, column].set_ylabel('Mean of Relative Differences')
+            else:
+                ax1[row, column].set_ylabel('Mean of Absolute Differences')
+            ax1[row, column].legend()
+            ax1[row, column].set_title(f'{layer_name} {layer_num} Activation Diff')
+            
+        self.activation_cache.clear()
+
+    def plot_kv_diff_prompts(self, layer_num: int, ax1, num_columns: int, relative: bool = False):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        for layer_name, kv_data in self.kv_cache.items():
+            if len(kv_data['key']) < 2:
+                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
+                continue
+
+            key_diff_means, key_diff_vars = [], []
+            value_diff_means, value_diff_vars = [], []
+            
+            for i in range(len(kv_data['key']) // 2):
+                cur_key = torch.tensor(kv_data['key'][i + len(kv_data['key']) // 2], device=device)
+                pre_key = torch.tensor(kv_data['key'][i], device=device)
+                cur_key.abs_()
+                pre_key.abs_()
+                
+                cur_value = torch.tensor(kv_data['value'][i + len(kv_data['value']) // 2], device=device)
+                pre_value = torch.tensor(kv_data['value'][i], device=device)
+                cur_value.abs_()
+                pre_value.abs_()
+                if relative:
+                    cur_key[cur_key == 0] = 1e-4
+                    pre_key[pre_key == 0] = 1e-4
+                    key = torch.abs(cur_key - pre_key) / (cur_key + pre_key)
+
+                    cur_value[cur_value == 0] = 1e-4
+                    pre_value[pre_value == 0] = 1e-4
+                    value = torch.abs(cur_value - pre_value) / (cur_value + pre_value)
+                else:
+                    key = torch.abs(cur_key - pre_key)
+                    value = torch.abs(cur_value - pre_value)
+                
+                key_diff_means.append(torch.mean(torch.abs(key)).item())
+                key_diff_vars.append(torch.var(key).item())
+                value_diff_means.append(torch.mean(torch.abs(value)).item())
+                value_diff_vars.append(torch.var(value).item())
+                    
+
+            timesteps = range(len(kv_data['key']) // 2)
+            
+            # Plot differences with error bars
+            row, column = layer_num//num_columns, layer_num%num_columns
+            ax1[row, column].errorbar(timesteps, key_diff_means, yerr=np.sqrt(key_diff_vars), 
+                            label='Key Diff', color='blue', capsize=5)
+            ax1[row, column].errorbar(timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
+                            label='Value Diff', color='red', capsize=5)
+            ax1[row, column].set_xticks(range(0, len(kv_data['key']) // 2, len(kv_data['key']) // 20))
+            ax1[row, column].set_xlabel('Timestep')
+            if relative:
+                ax1[row, column].set_ylabel('Mean of Relative Differences')
+            else:
+                ax1[row, column].set_ylabel('Mean of Absolute Differences')
+            ax1[row, column].legend()
+            ax1[row, column].set_title(f'{layer_name} {layer_num} KV Diff')
+
+        self.kv_cache.clear()
+
+    def plot_activation_diff_prompts(self, layer_num: int, ax1, num_columns: int, relative: bool = False):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        for layer_name, activaton_data in self.activation_cache.items():
+            if len(activaton_data['activation']) < 2:
+                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
+                continue
+
+            activation_diff_means, activation_diff_vars = [], []
+            
+            for i in range(len(activaton_data['activation']) // 2):
+                cur_activation = torch.tensor(activaton_data['activation'][i + len(activaton_data['activation']) // 2], device=device)
+                pre_activation = torch.tensor(activaton_data['activation'][i], device=device)
+                cur_activation.abs_()
+                pre_activation.abs_()
+
+                if relative:
+                    cur_activation[cur_activation == 0] = 1e-4
+                    pre_activation[pre_activation == 0] = 1e-4
+                    activation = torch.abs(cur_activation - pre_activation) / (cur_activation + pre_activation)
+                else:
+                    activation = torch.abs(cur_activation - pre_activation)
+
+                activation_diff_means.append(torch.mean(torch.abs(activation)).item())
+                activation_diff_vars.append(torch.var(activation).item())
+                    
+
+            timesteps = range(len(activaton_data['activation']) // 2)
+            
+            # Plot differences with error bars
+            row, column = layer_num//num_columns, layer_num%num_columns
+            ax1[row, column].errorbar(timesteps, activation_diff_means, yerr=np.sqrt(activation_diff_vars), 
+                            label='Activation Diff', color='blue', capsize=5)
+            ax1[row, column].set_xticks(range(0, len(activaton_data['activation']) // 2, len(activaton_data['activation']) // 20))
             ax1[row, column].set_xlabel('Timestep')
             if relative:
                 ax1[row, column].set_ylabel('Mean of Relative Differences')

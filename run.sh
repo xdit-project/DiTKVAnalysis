@@ -1,3 +1,7 @@
 python pixartalpha_example.py
 python cogvideo_example.py
 python sd3_example.py
+python flux_example.py
+python pixartalpha_example_switch_scheduler.py
+python cogvideo_example_switch_scheduler.py
+python sd3_prompt_diff.py

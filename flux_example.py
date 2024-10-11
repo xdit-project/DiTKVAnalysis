@@ -9,8 +9,11 @@ import torch
 import torch.distributed
 
 def main():
-    # Flux model has 57 == 6x10-3 transformer blocks
-    row, column = 6, 10
+    # Flux model has 57 == 8x8-1 transformer blocks
+    row, column = 8, 8
+    relative = False
+    os.makedirs('figs/overall', exist_ok=True)
+    os.makedirs('results/overall', exist_ok=True)
 
     pipe = FluxPipeline.from_pretrained(
         pretrained_model_name_or_path="/cfs/dit/FLUX.1-schnell",
@@ -37,13 +40,16 @@ def main():
                 layer.attn.processor.plot_kv_diff(i, ax1, column)
                 layer.attn.processor.plot_activation_diff(i, ax2, column)
         
+        for i in range(1, 8):
+            fig1.delaxes(ax1[7, i])
+            fig2.delaxes(ax2[7, i])
         fig1.tight_layout()
         fig2.tight_layout()
-        os.makedirs('figs', exist_ok=True)
-        os.makedirs('results', exist_ok=True)
-        fig1.savefig(os.path.join('figs', f'flux_kv_stats_{num_inference_steps}_steps.png'))
-        fig2.savefig(os.path.join('figs', f'flux_activation_stats_{num_inference_steps}_steps.png'))
-        output.save(os.path.join('results', f'flux_output_{num_inference_steps}_steps.png'))
+
+        relative_name = 'relative' if relative else 'absolute'
+        fig1.savefig(os.path.join('figs/overall', f'flux_kv_stats_{num_inference_steps}_steps_{relative_name}.png'))
+        fig2.savefig(os.path.join('figs/overall', f'flux_activation_stats_{num_inference_steps}_steps_{relative_name}.png'))
+        output.save(os.path.join('results/overall', f'flux_output_{num_inference_steps}_steps_{relative_name}.png'))
 
 if __name__ == "__main__":
     main()
