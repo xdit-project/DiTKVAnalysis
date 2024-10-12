@@ -4,14 +4,16 @@ attention_processor.JointAttnProcessor2_0 = CustomAttnProcessor2_0
 
 import matplotlib.pyplot as plt
 from diffusers import StableDiffusion3Pipeline
-import time
 import os
 import torch
 import torch.distributed
 
 def main():
-    # CogVideoX model has 24 == 4x6 transformer blocks
+    # SD3 model has 24 == 4x6 transformer blocks
     row, column = 4, 6
+    relative = False
+    os.makedirs('figs/overall', exist_ok=True)
+    os.makedirs('results/overall', exist_ok=True)
 
     pipe = StableDiffusion3Pipeline.from_pretrained(
         pretrained_model_name_or_path="/cfs/dit/stable-diffusion-3-medium-diffusers",
@@ -33,16 +35,16 @@ def main():
         for i, layer in enumerate(transformer.transformer_blocks):
             if hasattr(layer, 'attn'):
                 print(f"ploting layer {i}: {type(layer).__name__}")
-                layer.attn.processor.plot_kv_diff(i, ax1, column)
-                layer.attn.processor.plot_activation_diff(i, ax2, column)
+                layer.attn.processor.plot_kv_diff(i, ax1, column, relative=relative)
+                layer.attn.processor.plot_activation_diff(i, ax2, column, relative=relative)
         
         fig1.tight_layout()
         fig2.tight_layout()
-        os.makedirs('figs', exist_ok=True)
-        os.makedirs('results', exist_ok=True)
-        fig1.savefig(os.path.join('figs', f'sd3_kv_diffs_{num_inference_steps}_steps.png'))
-        fig2.savefig(os.path.join('figs', f'sd3_activation_diffs_{num_inference_steps}_steps.png'))
-        output.save(os.path.join('results', f'sd3_output_{num_inference_steps}_steps.png'))
+
+        relative_name = 'relative' if relative else 'absolute'
+        fig1.savefig(os.path.join('figs/overall', f'sd3_kv_diffs_{num_inference_steps}_steps_{relative_name}.png'))
+        fig2.savefig(os.path.join('figs/overall', f'sd3_activation_diffs_{num_inference_steps}_steps_{relative_name}.png'))
+        output.save(os.path.join('results/overall', f'sd3_output_{num_inference_steps}_steps_{relative_name}.png'))
 
 
 if __name__ == "__main__":
