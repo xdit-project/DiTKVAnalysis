@@ -9,6 +9,7 @@ from collections import defaultdict
 
 from diffusers.utils import deprecate
 from diffusers.models.attention_processor import Attention
+from diffusers.models.embeddings import apply_rotary_emb
 
 class AttnProcessorExperimentBase(metaclass=ABCMeta):
     def __init__(self):
@@ -17,15 +18,45 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
         self.timestep = 0
         self.kv_cache = defaultdict(lambda: defaultdict(list))
         self.activation_cache = defaultdict(lambda: defaultdict(list))
+        self.previous_step_cache = {
+            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
+        }
+        self.info = {
+            'means': {
+                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
+            },
+            'vars': {
+                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
+            }
+        }
 
     @abstractmethod
     def __call__():
         pass
 
-    def save_kv_cache(self, key, value, attn):
-        layer_name = attn.__class__.__name__
-        self.kv_cache[layer_name]['key'].append(key.detach().cpu().numpy())
-        self.kv_cache[layer_name]['value'].append(value.detach().cpu().numpy())
+    def update_cache(self, key, value):
+        if self.previous_step_cache[key] is None:
+            self.previous_step_cache[key] = value
+        else:
+            diff = torch.abs(value - self.previous_step_cache[key])
+            means = torch.mean(diff).item()
+            vars = torch.var(diff).item()
+            self.info['means'][key].append(means)
+            self.info['vars'][key].append(vars)
+            self.previous_step_cache[key] = value
+
+    def reset_cache(self):
+        self.previous_step_cache = {
+            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
+        }
+        self.info = {
+            'means': {
+                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
+            },
+            'vars': {
+                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
+            }
+        }
 
     def save_activation_cache(self, activation, attn):
         layer_name = attn.__class__.__name__
@@ -149,108 +180,6 @@ class AttnProcessorExperimentBase(metaclass=ABCMeta):
             
         self.activation_cache.clear()
 
-    def plot_kv_diff_prompts(self, layer_num: int, ax1, num_columns: int, relative: bool = False):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        for layer_name, kv_data in self.kv_cache.items():
-            if len(kv_data['key']) < 2:
-                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
-                continue
-
-            key_diff_means, key_diff_vars = [], []
-            value_diff_means, value_diff_vars = [], []
-            
-            for i in range(len(kv_data['key']) // 2):
-                cur_key = torch.tensor(kv_data['key'][i + len(kv_data['key']) // 2], device=device)
-                pre_key = torch.tensor(kv_data['key'][i], device=device)
-                cur_key.abs_()
-                pre_key.abs_()
-                
-                cur_value = torch.tensor(kv_data['value'][i + len(kv_data['value']) // 2], device=device)
-                pre_value = torch.tensor(kv_data['value'][i], device=device)
-                cur_value.abs_()
-                pre_value.abs_()
-                if relative:
-                    cur_key[cur_key == 0] = 1e-4
-                    pre_key[pre_key == 0] = 1e-4
-                    key = torch.abs(cur_key - pre_key) / (cur_key + pre_key)
-
-                    cur_value[cur_value == 0] = 1e-4
-                    pre_value[pre_value == 0] = 1e-4
-                    value = torch.abs(cur_value - pre_value) / (cur_value + pre_value)
-                else:
-                    key = torch.abs(cur_key - pre_key)
-                    value = torch.abs(cur_value - pre_value)
-                
-                key_diff_means.append(torch.mean(torch.abs(key)).item())
-                key_diff_vars.append(torch.var(key).item())
-                value_diff_means.append(torch.mean(torch.abs(value)).item())
-                value_diff_vars.append(torch.var(value).item())
-                    
-
-            timesteps = range(len(kv_data['key']) // 2)
-            
-            # Plot differences with error bars
-            row, column = layer_num//num_columns, layer_num%num_columns
-            ax1[row, column].errorbar(timesteps, key_diff_means, yerr=np.sqrt(key_diff_vars), 
-                            label='Key Diff', color='blue', capsize=5)
-            ax1[row, column].errorbar(timesteps, value_diff_means, yerr=np.sqrt(value_diff_vars), 
-                            label='Value Diff', color='red', capsize=5)
-            ax1[row, column].set_xticks(range(0, len(kv_data['key']) // 2, len(kv_data['key']) // 20))
-            ax1[row, column].set_xlabel('Timestep')
-            if relative:
-                ax1[row, column].set_ylabel('Mean of Relative Differences')
-            else:
-                ax1[row, column].set_ylabel('Mean of Absolute Differences')
-            ax1[row, column].legend()
-            ax1[row, column].set_title(f'{layer_name} {layer_num} KV Diff')
-
-        self.kv_cache.clear()
-
-    def plot_activation_diff_prompts(self, layer_num: int, ax1, num_columns: int, relative: bool = False):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        for layer_name, activaton_data in self.activation_cache.items():
-            if len(activaton_data['activation']) < 2:
-                print(f"Not enough timesteps for layer {layer_name}. Skipping.")
-                continue
-
-            activation_diff_means, activation_diff_vars = [], []
-            
-            for i in range(len(activaton_data['activation']) // 2):
-                cur_activation = torch.tensor(activaton_data['activation'][i + len(activaton_data['activation']) // 2], device=device)
-                pre_activation = torch.tensor(activaton_data['activation'][i], device=device)
-                cur_activation.abs_()
-                pre_activation.abs_()
-
-                if relative:
-                    cur_activation[cur_activation == 0] = 1e-4
-                    pre_activation[pre_activation == 0] = 1e-4
-                    activation = torch.abs(cur_activation - pre_activation) / (cur_activation + pre_activation)
-                else:
-                    activation = torch.abs(cur_activation - pre_activation)
-
-                activation_diff_means.append(torch.mean(torch.abs(activation)).item())
-                activation_diff_vars.append(torch.var(activation).item())
-                    
-
-            timesteps = range(len(activaton_data['activation']) // 2)
-            
-            # Plot differences with error bars
-            row, column = layer_num//num_columns, layer_num%num_columns
-            ax1[row, column].errorbar(timesteps, activation_diff_means, yerr=np.sqrt(activation_diff_vars), 
-                            label='Activation Diff', color='blue', capsize=5)
-            ax1[row, column].set_xticks(range(0, len(activaton_data['activation']) // 2, len(activaton_data['activation']) // 20))
-            ax1[row, column].set_xlabel('Timestep')
-            if relative:
-                ax1[row, column].set_ylabel('Mean of Relative Differences')
-            else:
-                ax1[row, column].set_ylabel('Mean of Absolute Differences')
-            ax1[row, column].legend()
-            ax1[row, column].set_title(f'{layer_name} {layer_num} Activation Diff')
-            
-        self.activation_cache.clear()
-
 
 class AttnProcessor2_0(AttnProcessorExperimentBase):
     def __init__(self):
@@ -303,8 +232,8 @@ class AttnProcessor2_0(AttnProcessorExperimentBase):
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
 
-        # save kv cache in a dict for plot
-        self.save_kv_cache(key, value, attn)
+        self.update_cache('k', key)
+        self.update_cache('v', value)
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -341,7 +270,7 @@ class AttnProcessor2_0(AttnProcessorExperimentBase):
 
         hidden_states = hidden_states / attn.rescale_output_factor
 
-        self.save_activation_cache(hidden_states, attn)
+        self.update_cache('a', hidden_states)
 
         self.timestep += 1
         return hidden_states
@@ -396,7 +325,16 @@ class xFuserCogVideoXAttnProcessor2_0(AttnProcessorExperimentBase):
         if attn.norm_k is not None:
             key = attn.norm_k(key)
 
-        self.save_kv_cache(key, value, attn)
+        # Apply RoPE if needed
+        if image_rotary_emb is not None:
+            query[:, :, text_seq_length:] = apply_rotary_emb(query[:, :, text_seq_length:], image_rotary_emb)
+            if not attn.is_cross_attention:
+                key[:, :, text_seq_length:] = apply_rotary_emb(key[:, :, text_seq_length:], image_rotary_emb)
+
+        self.update_cache('k', key[:,:,text_seq_length:])
+        self.update_cache('v', value[:,:,text_seq_length:])
+        self.update_cache('ek', key[:,:,:text_seq_length])
+        self.update_cache('ev', value[:,:,:text_seq_length])
 
         # TODO: add support for attn.scale when we move to Torch 2.1
         hidden_states = F.scaled_dot_product_attention(
@@ -412,11 +350,12 @@ class xFuserCogVideoXAttnProcessor2_0(AttnProcessorExperimentBase):
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
-        self.save_activation_cache(hidden_states, attn)
-
         encoder_hidden_states, hidden_states = hidden_states.split(
             [text_seq_length, latent_seq_length], dim=1
         )
+        self.update_cache('a', hidden_states)
+        self.update_cache('ea', encoder_hidden_states)
+
         return hidden_states, encoder_hidden_states
 
 
@@ -456,12 +395,15 @@ class xFuserJointAttnProcessor2_0(AttnProcessorExperimentBase):
         encoder_hidden_states_key_proj = attn.add_k_proj(encoder_hidden_states)
         encoder_hidden_states_value_proj = attn.add_v_proj(encoder_hidden_states)
 
+        self.update_cache('k', key)
+        self.update_cache('v', value)
+        self.update_cache('ek', encoder_hidden_states_key_proj)
+        self.update_cache('ev', encoder_hidden_states_value_proj)
+
         # attention
         query = torch.cat([query, encoder_hidden_states_query_proj], dim=1)
         key = torch.cat([key, encoder_hidden_states_key_proj], dim=1)
         value = torch.cat([value, encoder_hidden_states_value_proj], dim=1)
-        
-        self.save_kv_cache(key, value, attn)
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -486,7 +428,8 @@ class xFuserJointAttnProcessor2_0(AttnProcessorExperimentBase):
         if not attn.context_pre_only:
             encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
-        self.save_activation_cache(torch.concat((hidden_states, encoder_hidden_states), axis=1), attn)
+        self.update_cache('a', hidden_states)
+        self.update_cache('ea', encoder_hidden_states)
 
         if input_ndim == 4:
             hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
@@ -549,12 +492,24 @@ class FluxAttnProcessor2_0(AttnProcessorExperimentBase):
             if attn.norm_added_k is not None:
                 encoder_hidden_states_key_proj = attn.norm_added_k(encoder_hidden_states_key_proj)
 
+            encoder_size = encoder_hidden_states_query_proj.shape[2]
             # attention
             query = torch.cat([encoder_hidden_states_query_proj, query], dim=2)
             key = torch.cat([encoder_hidden_states_key_proj, key], dim=2)
             value = torch.cat([encoder_hidden_states_value_proj, value], dim=2)
 
-        self.save_kv_cache(key, value, attn)
+        if image_rotary_emb is not None:
+            query = apply_rotary_emb(query, image_rotary_emb)
+            key = apply_rotary_emb(key, image_rotary_emb)
+
+        if encoder_hidden_states is not None:
+            self.update_cache('k', key[:,:,encoder_size:])
+            self.update_cache('v', value[:,:,encoder_size:])
+            self.update_cache('ek', key[:,:,:encoder_size])
+            self.update_cache('ev', value[:,:,:encoder_size])
+        else:
+            self.update_cache('k', key)
+            self.update_cache('v', value)
 
         hidden_states = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0, is_causal=False)
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
@@ -572,10 +527,11 @@ class FluxAttnProcessor2_0(AttnProcessorExperimentBase):
             hidden_states = attn.to_out[1](hidden_states)
             encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
-            self.save_activation_cache(torch.concat((hidden_states, encoder_hidden_states), axis=1), attn)
+            self.update_cache('a', hidden_states)
+            self.update_cache('ea', encoder_hidden_states)
 
             return hidden_states, encoder_hidden_states
         else:
-            self.save_activation_cache(hidden_states, attn)
+            self.update_cache('a', hidden_states)
 
             return hidden_states
