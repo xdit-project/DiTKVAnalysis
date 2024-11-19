@@ -9,7 +9,7 @@ import numpy as np
 def main():
     path = 'redundancy/pixart-alpha'
     pipe = PixArtAlphaPipeline.from_pretrained(
-        pretrained_model_name_or_path="/cfs/dit/PixArt-XL-2-1024-MS",
+        pretrained_model_name_or_path="PixArt-alpha/PixArt-XL-2-1024-MS",
         torch_dtype=torch.float16,
     ).to("cuda")
     

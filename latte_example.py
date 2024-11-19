@@ -10,7 +10,7 @@ import numpy as np
 def main():
     path = 'redundancy/latte'
     pipe = LattePipeline.from_pretrained(
-        pretrained_model_name_or_path="/cfs/dit/Latte-1",
+        pretrained_model_name_or_path="maxin-cn/Latte-1",
         torch_dtype=torch.float16,
     ).to("cuda")
     for layer in pipe.transformer.transformer_blocks + pipe.transformer.temporal_transformer_blocks:

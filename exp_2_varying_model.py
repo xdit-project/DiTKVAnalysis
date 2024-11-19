@@ -9,9 +9,9 @@ models = {
     'latte': {'nlayers': 56, 'nsteps': 50, 'nrows': 19, 'height': 12, 'step': 15, 'exp': 2},
     'opensora': {'nlayers': 56, 'nsteps': 30, 'nrows': 19, 'height': 12, 'step': 10, 'exp': 2},
     'mochi': {'nlayers': 48, 'nsteps': 64, 'nrows': 16, 'height': 12, 'step': 20, 'exp': 2},
-    'flux-56': {'nlayers': 57, 'nsteps': 56, 'nrows': 19, 'height': 12, 'step': 20, 'exp': 3},
-    'flux-14': {'nlayers': 57, 'nsteps': 14, 'nrows': 19, 'height': 12, 'step': 4, 'exp': 3},
-    'flux-sd3-scheduler': {'nlayers': 57, 'nsteps': 28, 'nrows': 19, 'height': 12, 'step': 8, 'exp': 4},
+    #'flux-56': {'nlayers': 57, 'nsteps': 56, 'nrows': 19, 'height': 12, 'step': 20, 'exp': 3},
+    #'flux-14': {'nlayers': 57, 'nsteps': 14, 'nrows': 19, 'height': 12, 'step': 4, 'exp': 3},
+    #'flux-sd3-scheduler': {'nlayers': 57, 'nsteps': 28, 'nrows': 19, 'height': 12, 'step': 8, 'exp': 4},
 }
 batchsize = 10
 

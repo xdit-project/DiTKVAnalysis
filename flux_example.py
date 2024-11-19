@@ -9,7 +9,7 @@ import numpy as np
 def main():
     path = 'redundancy/flux'
     pipe = FluxPipeline.from_pretrained(
-        pretrained_model_name_or_path="/cfs/dit/FLUX.1-dev",
+        pretrained_model_name_or_path="black-forest-labs/FLUX.1-dev",
         torch_dtype=torch.float16,
     ).to("cuda")
     

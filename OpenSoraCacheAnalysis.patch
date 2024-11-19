@@ -1,0 +1,148 @@
+diff --git a/configs/opensora-v1-2/inference/sample.py b/configs/opensora-v1-2/inference/sample.py
+index 3e2c623..8c23bb7 100644
+--- a/configs/opensora-v1-2/inference/sample.py
++++ b/configs/opensora-v1-2/inference/sample.py
+@@ -17,8 +17,8 @@ model = dict(
+     type="STDiT3-XL/2",
+     from_pretrained="hpcai-tech/OpenSora-STDiT-v3",
+     qk_norm=True,
+-    enable_flash_attn=True,
+-    enable_layernorm_kernel=True,
++    enable_flash_attn=False,
++    enable_layernorm_kernel=False,
+ )
+ vae = dict(
+     type="OpenSoraVAE_V1_2",
+diff --git a/opensora/models/layers/blocks.py b/opensora/models/layers/blocks.py
+index 40e6abb..dd0fb47 100644
+--- a/opensora/models/layers/blocks.py
++++ b/opensora/models/layers/blocks.py
+@@ -166,6 +166,42 @@ class Attention(nn.Module):
+         
+         self.is_causal = False
+ 
++        self.previous_step_cache = {
++            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
++        }
++        self.info = {
++            'means': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            },
++            'vars': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            }
++        }
++
++    def update_cache(self, key, value):
++        if self.previous_step_cache[key] is None:
++            self.previous_step_cache[key] = value
++        else:
++            diff = torch.abs(value - self.previous_step_cache[key])
++            means = torch.mean(diff).item()
++            vars = torch.var(diff).item()
++            self.info['means'][key].append(means)
++            self.info['vars'][key].append(vars)
++            self.previous_step_cache[key] = value
++
++    def reset_cache(self):
++        self.previous_step_cache = {
++            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
++        }
++        self.info = {
++            'means': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            },
++            'vars': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            }
++        }
++
+     def forward(self, x: torch.Tensor) -> torch.Tensor:
+         B, N, C = x.shape
+         # flash attn is not memory efficient for small sequences, this is empirical
+@@ -187,6 +223,8 @@ class Attention(nn.Module):
+                 q = self.rotary_emb(q)
+                 k = self.rotary_emb(k)
+ 
++        self.update_cache('k', k)
++        self.update_cache('v', v)
+         if enable_flash_attn:
+             from flash_attn import flash_attn_func
+ 
+@@ -222,6 +260,7 @@ class Attention(nn.Module):
+         x = x.reshape(x_output_shape)
+         x = self.proj(x)
+         x = self.proj_drop(x)
++        self.update_cache('a', x)
+         return x
+ 
+ 
+diff --git a/opensora/models/stdit/stdit3.py b/opensora/models/stdit/stdit3.py
+index b0c046a..9ddc746 100644
+--- a/opensora/models/stdit/stdit3.py
++++ b/opensora/models/stdit/stdit3.py
+@@ -473,7 +473,7 @@ def STDiT3_XL_2(from_pretrained=None, **kwargs):
+         config = STDiT3Config(depth=28, hidden_size=1152, patch_size=(1, 2, 2), num_heads=16, **kwargs)
+         model = STDiT3(config)
+         if from_pretrained is not None:
+-            load_checkpoint(model, from_pretrained)
++            load_checkpoint(model, from_pretrained, model_name="model.safetensors")
+     return model
+ 
+ 
+diff --git a/opensora/models/vae/vae.py b/opensora/models/vae/vae.py
+index 3e85bf5..adac003 100644
+--- a/opensora/models/vae/vae.py
++++ b/opensora/models/vae/vae.py
+@@ -291,5 +291,5 @@ def OpenSoraVAE_V1_2(
+         model = VideoAutoencoderPipeline(config)
+ 
+         if from_pretrained:
+-            load_checkpoint(model, from_pretrained)
++            load_checkpoint(model, from_pretrained, model_name="model.safetensors")
+     return model
+diff --git a/scripts/inference.py b/scripts/inference.py
+index c4578a7..203f33d 100644
+--- a/scripts/inference.py
++++ b/scripts/inference.py
+@@ -32,9 +32,10 @@ from opensora.utils.inference_utils import (
+     split_prompt,
+ )
+ from opensora.utils.misc import all_exists, create_logger, is_distributed, is_main_process, to_torch_dtype
+-
++import numpy as np
+ 
+ def main():
++    path = 'redundancy/opensora'
+     torch.set_grad_enabled(False)
+     # ======================================================
+     # configs & runtime variables
+@@ -119,6 +120,9 @@ def main():
+             prompts = load_prompts(cfg.prompt_path, start_idx, cfg.get("end_index", None))
+         else:
+             prompts = [cfg.get("prompt_generator", "")] * 1_000_000  # endless loop
++    with open('caption1000.txt') as f:
++        lines = f.readlines()
++        prompts = list(map(lambda x:x[:-1], lines))
+ 
+     # == prepare reference ==
+     reference_path = cfg.get("reference_path", [""] * len(prompts))
+@@ -144,6 +148,7 @@ def main():
+ 
+     # == Iter over all samples ==
+     for i in progress_wrap(range(0, len(prompts), batch_size)):
++        print("start", i)
+         # == prepare batch prompts ==
+         batch_prompts = prompts[i : i + batch_size]
+         ms = mask_strategy[i : i + batch_size]
+@@ -273,6 +278,10 @@ def main():
+                     progress=verbose >= 2,
+                     mask=masks,
+                 )
++                for layer_index, layer in enumerate(model.spatial_blocks + model.temporal_blocks):
++                    processor = layer.attn
++                    np.save(f'{path}/{i}_l{layer_index}', processor.info)
++                    processor.reset_cache()
+                 samples = vae.decode(samples.to(dtype), num_frames=num_frames)
+                 video_clips.append(samples)
+ 

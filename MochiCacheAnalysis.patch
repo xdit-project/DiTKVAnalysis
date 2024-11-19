@@ -1,0 +1,195 @@
+diff --git a/demos/cli.py b/demos/cli.py
+index ac70524..394616c 100755
+--- a/demos/cli.py
++++ b/demos/cli.py
+@@ -77,7 +77,8 @@ def generate_video(
+     cfg_scale,
+     num_inference_steps,
+     use_fsdp, t5_model_path, max_t5_token_length,
+-    use_xdit, ulysses_degree, ring_degree, cfg_parallel
++    use_xdit, ulysses_degree, ring_degree, cfg_parallel,
++    i
+ ):
+     load_model(use_fsdp, t5_model_path, max_t5_token_length,
+         use_xdit, ulysses_degree, ring_degree, cfg_parallel)
+@@ -116,7 +117,7 @@ def generate_video(
+         assert final_frames.dtype == np.float32
+ 
+         os.makedirs("outputs", exist_ok=True)
+-        output_path = os.path.join("outputs", f"output_{int(time.time())}.mp4")
++        output_path = os.path.join("outputs", f"{i}.mp4")
+ 
+ 
+         save_video(final_frames, output_path)
+@@ -162,19 +163,30 @@ def generate_cli(
+     use_fsdp, t5_model_path, max_t5_token_length   
+ ):
+     configure_model(model_dir, cpu_offload, torch.bfloat16)
+-    output = generate_video(
+-        prompt,
+-        negative_prompt,
+-        width,
+-        height,
+-        num_frames,
+-        seed,
+-        cfg_scale,
+-        num_steps,
+-        use_fsdp, t5_model_path, max_t5_token_length,
+-        use_xdit, ulysses_degree, ring_degree, cfg_parallel
+-    )
+-    click.echo(f"Video generated at: {output}")
++    with open('captions1000.txt') as f:
++        lines = f.readlines()
++
++    for i in range(0, 100):
++        if os.path.exists(f'mochi1/{i}_l0.npy'):
++            continue
++        print('start', i)
++        line = lines[i][:-1]
++        os.environ['NUM'] = str(i)
++        
++        output = generate_video(
++            line,
++            negative_prompt,
++            width,
++            height,
++            num_frames,
++            seed,
++            cfg_scale,
++            num_steps,
++            use_fsdp, t5_model_path, max_t5_token_length,
++            use_xdit, ulysses_degree, ring_degree, cfg_parallel,
++            i
++        )
++        click.echo(f"Video generated at: {output}")
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/src/genmo/mochi_preview/dit/joint_model/asymm_models_joint.py b/src/genmo/mochi_preview/dit/joint_model/asymm_models_joint.py
+index 2f56f33..67b9449 100644
+--- a/src/genmo/mochi_preview/dit/joint_model/asymm_models_joint.py
++++ b/src/genmo/mochi_preview/dit/joint_model/asymm_models_joint.py
+@@ -42,6 +42,8 @@ from xfuser.core.distributed.parallel_state import (
+     get_sp_group
+ )
+ 
++import numpy as np
++
+ class AsymmetricAttention(nn.Module):
+     def __init__(
+         self,
+@@ -85,15 +87,57 @@ class AsymmetricAttention(nn.Module):
+         self.proj_y = nn.Linear(dim_x, dim_y, bias=out_bias, device=device) if update_y else nn.Identity()
+         self.use_xdit = is_use_xdit()
+ 
+-        if self.use_xdit:
+-            from xfuser.core.long_ctx_attention import xFuserLongContextAttention
+-
+-            self.xdit_attn_layer = xFuserLongContextAttention(
+-                scatter_idx=2,
+-                gather_idx=1,
+-                ring_impl_type="basic",
+-                use_kv_cache=False,
+-            ).to(device=device, dtype=torch.bfloat16)
++        self.cfg = False
++        self.previous_step_cache_with_cfg = {
++            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
++        }
++        self.current_step_cache = {
++            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
++        }
++        self.info = {
++            'means': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            },
++            'vars': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            }
++        }
++    
++    def update_cache(self, key, value):
++        if not self.cfg:
++            self.current_step_cache[key] = value.cpu().float().numpy()
++        else:
++            if self.previous_step_cache_with_cfg[key] is None:
++                self.previous_step_cache_with_cfg[key] = np.concatenate((
++                    self.current_step_cache[key],
++                    value.cpu().float().numpy()
++                ), axis=1)
++            else:
++                temp = np.concatenate((
++                    self.current_step_cache[key], 
++                    value.cpu().float().numpy()
++                ), axis=1)
++                diff = np.abs(temp - self.previous_step_cache_with_cfg[key])
++                means = np.mean(diff)
++                vars = np.var(diff)
++                self.info['means'][key].append(means)
++                self.info['vars'][key].append(vars)
++                self.previous_step_cache_with_cfg[key] = temp
++    def clear_cache(self):
++        self.previous_step_cache_with_cfg = {
++            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
++        }
++        self.current_step_cache = {
++            'k': None, 'v': None, 'a': None, 'ek': None, 'ev': None, 'ea': None
++        }
++        self.info = {
++            'means': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            },
++            'vars': {
++                'k': [], 'v': [], 'a': [], 'ek': [], 'ev': [], 'ea': []
++            }
++        }
+ 
+     def run_qkv_y(self, y):
+         cp_rank, cp_size = cp.get_cp_rank_size()
+@@ -144,6 +188,10 @@ class AsymmetricAttention(nn.Module):
+         q_x = apply_rotary_emb_qk_real(q_x, rope_cos, rope_sin)
+         k_x = self.k_norm_x(k_x)
+         k_x = apply_rotary_emb_qk_real(k_x, rope_cos, rope_sin)
++        self.update_cache('k', k_x)
++        self.update_cache('v', v_x)
++        self.update_cache('ek', k_y)
++        self.update_cache('ev', v_y)
+ 
+         # Unite streams
+         qkv = unify_streams(
+@@ -220,6 +268,8 @@ class AsymmetricAttention(nn.Module):
+             out = self.comfy_attention(qkv)
+ 
+         x, y = pad_and_split_xy(out, valid_token_indices, B, N, L, qkv.dtype)
++        self.update_cache('a', x)
++        self.update_cache('ea', y)
+         assert x.size() == (B, N, local_dim)
+         assert y.size() == (B, L, local_dim)
+ 
+diff --git a/src/genmo/mochi_preview/pipelines.py b/src/genmo/mochi_preview/pipelines.py
+index dbf2d7a..0505919 100644
+--- a/src/genmo/mochi_preview/pipelines.py
++++ b/src/genmo/mochi_preview/pipelines.py
+@@ -374,7 +374,11 @@ def sample_model(device, dit, conditioning, **args):
+                         out, separate_tensors=True
+                     )
+                 else:
++                    for layer in dit.blocks:
++                        layer.attn.cfg = False
+                     out_cond = dit(z, sigma, **cond_text)
++                    for layer in dit.blocks:
++                        layer.attn.cfg = True
+                     out_uncond = dit(z, sigma, **cond_null)
+         assert out_cond.shape == out_uncond.shape
+         out_uncond = out_uncond.to(z)
+@@ -395,6 +399,11 @@ def sample_model(device, dit, conditioning, **args):
+         #assert pred.dtype == torch.float32
+         z = z + dsigma * pred
+ 
++    path = 'redundancy/mochi/'
++    for layer_index, layer in enumerate(dit.blocks):
++        np.save(f'{path}/{os.environ["NUM"]}_l{layer_index}', layer.attn.info)
++    for layer in dit.blocks:
++        layer.attn.clear_cache()
+     z = z[:B] if cond_batched else z
+     return dit_latents_to_vae_latents(z)
+ 

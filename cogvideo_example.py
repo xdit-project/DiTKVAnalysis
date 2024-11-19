@@ -10,7 +10,7 @@ import numpy as np
 def main():
     path = 'redundancy/cogvideox-5b'
     pipe = CogVideoXPipeline.from_pretrained(
-        pretrained_model_name_or_path="/cfs/dit/CogVideoX-5b",
+        pretrained_model_name_or_path="THUDM/CogVideoX-5b",
         torch_dtype=torch.float16,
     ).to("cuda")
     

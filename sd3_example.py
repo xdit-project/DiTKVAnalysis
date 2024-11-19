@@ -9,7 +9,7 @@ import numpy as np
 def main():
     path = 'redundancy/sd3'
     pipe = StableDiffusion3Pipeline.from_pretrained(
-        pretrained_model_name_or_path="/cfs/dit/stable-diffusion-3-medium-diffusers",
+        pretrained_model_name_or_path="stabilityai/stable-diffusion-3-medium-diffusers",
         torch_dtype=torch.float16,
     ).to("cuda")
     
