@@ -3,53 +3,35 @@ from diffusers.utils import export_to_video
 from attn_processor import xFuserCogVideoXAttnProcessor2_0 as CustomAttnProcessor2_0
 attention_processor.CogVideoXAttnProcessor2_0 = CustomAttnProcessor2_0
 
-import matplotlib.pyplot as plt
 from diffusers import CogVideoXPipeline
-import os
 import torch
-import torch.distributed
+import numpy as np
 
 def main():
-    # CogVideoX model has 30 == 5x6 transformer blocks
-    row, column = 5, 6
-    relative = False
-    os.makedirs('figs/overall', exist_ok=True)
-    os.makedirs('results/overall', exist_ok=True)
-
+    path = 'redundancy/cogvideox-5b'
     pipe = CogVideoXPipeline.from_pretrained(
-        pretrained_model_name_or_path="/cfs/dit/CogVideoX-2b",
+        pretrained_model_name_or_path="THUDM/CogVideoX-5b",
         torch_dtype=torch.float16,
     ).to("cuda")
-    torch.cuda.reset_peak_memory_stats()
+    
+    with open('caption1000.txt') as f:
+        lines = f.readlines()
 
-    for num_inference_steps in [20, 40, 80, 160]:
+    for i, line in enumerate(lines):
+        line = line[:-1]
         output = pipe(
-            height=480,
-            width=720,
-            prompt="a small cat is playing wit a toy car.",
-            num_inference_steps=num_inference_steps,
+            prompt=line,
+            generator=torch.Generator(device="cuda").manual_seed(42),
             num_frames=9,
-            generator=torch.Generator(device="cuda").manual_seed(123),
         ).frames[0]
 
-        fig1, ax1 = plt.subplots(row, column, figsize=(32, 16))
-        fig2, ax2 = plt.subplots(row, column, figsize=(32, 16))
-
         transformer = pipe.transformer
-        for i, layer in enumerate(transformer.transformer_blocks):
-            if hasattr(layer, 'attn1'):
-                print(f"ploting layer {i}: {type(layer).__name__}")
-                layer.attn1.processor.plot_kv_diff(i, ax1, column)
-                layer.attn1.processor.plot_activation_diff(i, ax2, column)
-        
-        fig1.tight_layout()
-        fig2.tight_layout()
-
-        relative_name = 'relative' if relative else 'absolute'
-        fig1.savefig(os.path.join('figs/overall', f'cogvideo_kv_diffs_{num_inference_steps}_steps_{relative_name}.png'))
-        fig2.savefig(os.path.join('figs/overall', f'cogvideo_activation_stats_{num_inference_steps}_steps_{relative_name}.png'))
-        export_to_video(output, os.path.join('results/overall', f'cogvideo_output_{num_inference_steps}_steps_{relative_name}.mp4'), fps=8)
-
+        for layer_index, layer in enumerate(transformer.transformer_blocks):
+            processor = layer.attn1.processor
+            np.save(f'{path}/{i}_l{layer_index}', processor.info)
+            processor.reset_cache()
+        export_to_video(output, f'results/cogvideox-5b/{i}.mp4', fps=8)
+        print("finish", i)
 
 if __name__ == "__main__":
     main()

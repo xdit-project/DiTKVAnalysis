@@ -1,0 +1,7 @@
+torch
+accelerate
+diffusers
+transformers
+sentencepiece
+protobuf
+matplotlib
