@@ -38,3 +38,19 @@ mkdir exp-results/
 python exp_1_varying_prompt.py
 python exp_2_varying_model.py
 ```
+
+## Citations
+
+[Unveiling Redundancy in Diffusion Transformers (DiTs): A Systematic Study](https://arxiv.org/abs/2411.13588)
+
+```
+@misc{sun2024unveilingredundancydiffusiontransformers,
+      title={Unveiling Redundancy in Diffusion Transformers (DiTs): A Systematic Study}, 
+      author={Xibo Sun and Jiarui Fang and Aoyu Li and Jinzhe Pan},
+      year={2024},
+      eprint={2411.13588},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2411.13588}, 
+}
+```
