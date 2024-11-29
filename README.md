@@ -44,13 +44,10 @@ python exp_2_varying_model.py
 [Unveiling Redundancy in Diffusion Transformers (DiTs): A Systematic Study](https://arxiv.org/abs/2411.13588)
 
 ```
-@misc{sun2024unveilingredundancydiffusiontransformers,
-      title={Unveiling Redundancy in Diffusion Transformers (DiTs): A Systematic Study}, 
-      author={Xibo Sun and Jiarui Fang and Aoyu Li and Jinzhe Pan},
-      year={2024},
-      eprint={2411.13588},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2411.13588}, 
+@article{sun2024unveiling,
+  title={Unveiling Redundancy in Diffusion Transformers (DiTs): A Systematic Study},
+  author={Sun, Xibo and Fang, Jiarui and Li, Aoyu and Pan, Jinzhe},
+  journal={arXiv preprint arXiv:2411.13588},
+  year={2024}
 }
 ```
